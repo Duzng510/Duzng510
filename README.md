@@ -9,7 +9,7 @@
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="https://readme-typing-svg.demolab.com?font=Press+Start+2P&size=16&duration=3200&pause=900&color=00D1FF&center=true&vCenter=true&repeat=true&width=680&height=40&lines=IT+student.+Sofa+enjoyer.%3BI+prompt%2C+the+model+commits.%3BReviewing+AI+code+until+it%27s+boring.%3BPeak+commit+hour%3A+05%3A00+local.%3BEndeavourOS+%2B+Hyprland.+Arch+btw.%3B111+commits%2C+29+PRs%2C+still+learning.">
-  <img alt="Dòng chữ pixel đổi liên tục: IT student, sofa enjoyer, I prompt the model commits" src="https://readme-typing-svg.demolab.com?font=Press+Start+2P&size=16&duration=3200&pause=900&color=0969DA&center=true&vCenter=true&repeat=true&width=680&height=40&lines=IT+student.+Sofa+enjoyer.%3BI+prompt%2C+the+model+commits.%3BReviewing+AI+code+until+it%27s+boring.%3BPeak+commit+hour%3A+05%3A00+local.%3BEndeavourOS+%2B+Hyprland.+Arch+btw.%3B111+commits%2C+29+PRs%2C+still+learning." width="100%">
+  <img alt="Dòng chữ pixel đổi liên tục: IT student, I prompt the model commits" src="https://readme-typing-svg.demolab.com?font=Press+Start+2P&size=16&duration=3200&pause=900&color=0969DA&center=true&vCenter=true&repeat=true&width=680&height=40&lines=IT+student.+Sofa+enjoyer.%3BI+prompt%2C+the+model+commits.%3BReviewing+AI+code+until+it%27s+boring.%3BPeak+commit+hour%3A+05%3A00+local.%3BEndeavourOS+%2B+Hyprland.+Arch+btw.%3B111+commits%2C+29+PRs%2C+still+learning." width="100%">
 </picture>
 
 <picture>
