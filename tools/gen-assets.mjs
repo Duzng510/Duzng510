@@ -381,7 +381,7 @@ function snakeGrid(T, cal) {
   const kt = Array.from({ length: steps }, (_, i) => i / steps);
 
   return svg({
-    w: W, h: H, cell: 1, title: 'snake-' + T.name,
+    w: W, h: H, cell: 2, title: 'snake-' + T.name,
     desc: `Luoi ${COLS} tuan contribution (${cal.total} commit duong tinh trong 12 thang) voi ran pixel bo ngang.`,
     layers: [
       layer('base', { grid: base, T }),
