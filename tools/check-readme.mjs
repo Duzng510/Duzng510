@@ -23,7 +23,10 @@ const report = (law, ok, detail) => {
   if (!ok) failed++;
 };
 
-const md = readFileSync(join(ROOT, 'README.md'), 'utf8');
+const raw = readFileSync(join(ROOT, 'README.md'));
+report('L0 no-BOM', !raw.subarray(0, 3).equals(Buffer.from([0xef, 0xbb, 0xbf])),
+  '3 byte dau file = ' + [...raw.subarray(0, 3)].map((x) => x.toString(16)).join(','));
+const md = raw.toString('utf8');
 
 // L4
 const token = execSync('gh auth token', { encoding: 'utf8' }).trim();

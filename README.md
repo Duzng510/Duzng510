@@ -1,4 +1,4 @@
-﻿<div align="center">
+<div align="center">
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/Duzng510/Duzng510/main/assets/banner-dark.svg">
