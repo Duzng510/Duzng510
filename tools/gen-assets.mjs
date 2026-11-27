@@ -10,7 +10,7 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { DARK, LIGHT } from './palette.mjs';
+import { DARK, LIGHT, SEASONS, SCENES, monthSeason } from './palette.mjs';
 import { textToRows, GH, GW } from './font.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -87,14 +87,27 @@ function serialize(g, T) {
   return parts.join('');
 }
 
-function layer(name, cells, { opacity, anim = null } = {}) {
-  return { name, body: serialize(cells.grid, cells.T), anim, opacity };
+function layer(name, cells, { opacity, anim = null, anims = null } = {}) {
+  return { name, body: serialize(cells.grid, cells.T), anim, anims, opacity };
 }
 
-// Mot keyframe bang: attr = 'opacity' | 'translate'.
+// Anims cua mot group: ap duoc nhieu animate len cung <g> (vd opacity discrete
+// cho vong doi mua + animateTransform linear cho hat roi). Mot group phai chua
+// <path> (L3b) nen khong tach opacity sang <g> trung gian.
+function animsOf(L) {
+  return L.anims ?? (L.anim ? [L.anim] : []);
+}
+
+// Mot keyframe bang. a.calcMode = 'discrete' (mac dinh, hop chat 8-bit va L3)
+// hoac 'linear' (minh chuyen dong cho hat). discrete dung keyTimes dang git gia
+// tri den ket tiep; linear phan bo deu tu 0->1.
 function smil(a) {
-  const kt = (a.keyTimes ?? a.values.map((_, i) => i / a.values.length)).map((k) => k.toFixed(4));
-  const common = ` keyTimes="${kt.join(';')}" calcMode="discrete" dur="${a.dur}s" repeatCount="indefinite"`;
+  const cm = a.calcMode ?? 'discrete';
+  const n = a.values.length;
+  const kt = (a.keyTimes ?? (cm === 'linear' && n > 1
+    ? a.values.map((_, i) => i / (n - 1))
+    : a.values.map((_, i) => i / n))).map((k) => k.toFixed(4));
+  const common = ` keyTimes="${kt.join(';')}" calcMode="${cm}" dur="${a.dur}s" repeatCount="indefinite"`;
   if (a.attr === 'opacity') return `<animate attributeName="opacity" values="${a.values.join(';')}"${common}/>`;
   return `<animateTransform attributeName="transform" type="translate" values="${a.values.join(';')}"${common}/>`;
 }
@@ -103,8 +116,21 @@ function smil(a) {
 const SNAP = process.env.SNAP !== undefined ? Number(process.env.SNAP) : null;
 
 function snapValue(a, t) {
-  const phase = ((t % a.dur) + a.dur) % a.dur / a.dur;
-  const kt = a.keyTimes ?? a.values.map((_, i) => i / a.values.length);
+  const cm = a.calcMode ?? 'discrete';
+  const phase = (((t % a.dur) + a.dur) % a.dur) / a.dur;
+  const n = a.values.length;
+  const kt = a.keyTimes ?? (cm === 'linear' && n > 1
+    ? a.values.map((_, i) => i / (n - 1))
+    : a.values.map((_, i) => i / n));
+  if (cm === 'linear' && n > 1) {
+    let i = 0; while (i < n - 1 && phase >= kt[i + 1]) i++;
+    const span = (kt[i + 1] - kt[i]) || 1;
+    const f = Math.min(1, Math.max(0, (phase - kt[i]) / span));
+    if (a.attr === 'opacity') return +( +a.values[i] + (+a.values[i + 1] - +a.values[i]) * f ).toFixed(3);
+    const [x0, y0] = a.values[i].split(/\s+/).map(Number);
+    const [x1, y1] = a.values[i + 1].split(/\s+/).map(Number);
+    return `${(x0 + (x1 - x0) * f).toFixed(2)} ${(y0 + (y1 - y0) * f).toFixed(2)}`;
+  }
   let idx = 0;
   kt.forEach((k, i) => { if (phase + 1e-9 >= k) idx = i; });
   return a.values[idx];
@@ -113,14 +139,20 @@ function snapValue(a, t) {
 function svg({ w, h, cell, layers, title, desc }) {
   const W = w * cell, H = h * cell;
   const inner = layers.map((L) => {
+    const anims = animsOf(L);
     const attrs = [];
-    let animStr = '';
-    if (L.anim && SNAP === null) animStr = smil(L.anim);
     if (L.opacity !== undefined) attrs.push(`opacity="${L.opacity}"`);
-    if (L.anim && SNAP !== null) {
-      const v = snapValue(L.anim, SNAP);
-      if (L.anim.attr === 'opacity') attrs[attrs.length - 1] = `opacity="${v}"`;
-      else attrs.push(`transform="translate(${v})"`);
+    let animStr = '';
+    if (SNAP === null) {
+      animStr = anims.map(smil).join('');
+    } else {
+      for (const a of anims) {
+        const v = snapValue(a, SNAP);
+        if (a.attr === 'opacity') {
+          const oi = attrs.findIndex((x) => x.startsWith('opacity='));
+          if (oi >= 0) attrs[oi] = `opacity="${v}"`; else attrs.push(`opacity="${v}"`);
+        } else attrs.push(`transform="translate(${v})"`);
+      }
     }
     const open = attrs.length ? `<g ${attrs.join(' ')}>` : '<g>';
     return `${open}${animStr}${L.body}</g>`;
@@ -177,105 +209,137 @@ function paletteMap(T) {
   };
 }
 
-// ---------------------------------------------------------------- banner
+// ---------------------------------------------------------------- hero 4 mua
+// Mot scene pixel tu vong lap xuan -> ha -> thu -> dong. Base (than cay, nguoi)
+// ve 1 lan; rieng 4 bo nen/tron/hat doi bang opacity discrete dung mot o, hat roi
+// translate linear (minh chuyen dong, khong phinh <path>).
 
-// values cho vong xoay frame: chi frame 'on' sang, cac frame con lai tat.
-const rotateOnes = (n, on) => Array.from({ length: n }, (_, i) => (i === on ? 1 : 0)).join(';');
+const put = (g, x, y, c) => {
+  if (x >= 0 && y >= 0 && x < g[0].length && y < g.length) g[y][x] = c;
+};
+function disc(g, cx, cy, r, c) {
+  for (let y = -r; y <= r; y++) for (let x = -r; x <= r; x++) if (x * x + y * y <= r * r) put(g, cx + x, cy + y, c);
+}
+function blob(g, cx, cy, rx, ry, c) {
+  for (let y = -ry; y <= ry; y++) for (let x = -rx; x <= rx; x++)
+    if ((x * x) / (rx * rx) + (y * y) / (ry * ry) <= 1) put(g, cx + x, cy + y, c);
+}
 
-function banner(T) {
-  const W = 160, H = 44, M = paletteMap(T);
-  const base = grid(W, H);
-  fill(base, 0, 0, W, H, T.bg);
-  // san + luoi perspective
-  fill(base, 0, 34, W, H - 34, T.panel);
-  for (let y = 36; y < H; y += 3) for (let x = 0; x < W; x++) if (x % 2 === 0) base[y][x] = T.border;
-  for (let x = 0; x < W; x += 10) fill(base, x, 34, 1, H - 34, T.border);
-  outline(base, 0, 33, W, 1, T.border);
+// opacity discrete: sang duy nhat trong o thu i tren n o, vong `dur`.
+function seasonWindow(i, n, dur) {
+  const a = i / n, b = (i + 1) / n;
+  if (i === 0) return { attr: 'opacity', values: ['1', '0', '0'], keyTimes: [0, b, 1], dur };
+  return { attr: 'opacity', values: ['0', '1', '0', '0'], keyTimes: [0, a, b, 1], dur };
+}
 
-  // CRT: vien 4..100, man hinh 6..98 (15 ky tu/line), chan de
-  fill(base, 4, 6, 96, 26, T.dim);
-  fill(base, 6, 8, 92, 20, T.bg);
-  fill(base, 6, 8, 92, 1, T.border);
-  fill(base, 44, 32, 16, 3, T.dim);
-  fill(base, 36, 35, 32, 2, T.border);
-  fill(base, 92, 29, 3, 2, T.green);
+const TRUNK = { dark: '#5a3f2a', light: '#7a5230' };
+const PERSON = {
+  dark: { hair: '#2a1e12', skin: '#e8c39e', shirt: '#3a6ea5', pants: '#22304d' },
+  light: { hair: '#241a10', skin: '#e8b88a', shirt: '#0969da', pants: '#3a2f2f' },
+};
 
-  // sofa ben phai (108..140) + nguoi ngoi chi tay ve man hinh
-  const sofa = grid(W, H);
-  // Ve nguoi TRUOC, sofa sau: phan than duoi bi lung sofa che -> doc la "ngoi".
-  fill(sofa, 120, 10, 6, 6, T.cream);
-  fill(sofa, 121, 12, 1, 1, T.bg);
-  fill(sofa, 124, 12, 1, 1, T.bg);
-  fill(sofa, 118, 16, 10, 4, T.blue);
-  fill(sofa, 114, 14, 5, 2, T.blue);
-  sprite(sofa, 108, 16, SOFA, M, { scale: 2 });
+function hero(T, SC4) {
+  const W = 200, H = 88, HZ = 60, TRX = 70, n = SEASONS.length, DUR = 20;
+  const P = PERSON[T.name], TC = TRUNK[T.name];
+  const win = (i) => seasonWindow(i, n, DUR);
 
-  // ba frame noi dung man hinh, moi dong <= 15 ky tu de vua 92 o
-  const screens = [
-    ['> VIBE MODE ON', '> PROMPT SENT'],
-    ['> MODEL: 3 FILES', '> DIFF: LGTM'],
-    ['> TEST: GREEN', '> SHIP IT'],
-  ].map((lines) => {
-    const g = grid(W, H);
-    lines.forEach((ln, r) => text(g, 9, 13 + r * 8, ln, r === 0 ? T.cyan : T.ink, { scale: 1 }));
-    return g;
+  // nen tro/dat/matt troi + chu tinh theo tung mua (ve 4 lan, chen nhieu <path>)
+  const bgLayers = SEASONS.map((name, i) => {
+    const sc = SC4[name]; const g = grid(W, H);
+    fill(g, 0, 0, W, HZ - 16, sc.skyTop);
+    fill(g, 0, HZ - 16, W, 16, sc.skyLo);
+    disc(g, 150, 16, 6, sc.sun); disc(g, 150, 16, 4, sc.sun);
+    for (let x = 0; x < W; x++) {
+      const y = Math.round(HZ - 11 - 6 * Math.sin(x / 26) - 3 * Math.sin(x / 9));
+      put(g, x, y, sc.hillFar); put(g, x, y + 1, sc.hillFar);
+    }
+    fill(g, 0, HZ, W, H - HZ, sc.ground);
+    fill(g, 0, H - 8, W, 8, sc.groundDeep);
+    text(g, 6, 78, 'LOCALHOST // AFK', sc.text, { scale: 1 });
+    return layer('bg-' + name, { grid: g, T }, { opacity: i === 0 ? 1 : 0, anim: win(i) });
   });
 
-  // sparkle xen ke
-  const sparks = [grid(W, H), grid(W, H)];
-  [[103, 6], [101, 26]].forEach(([x, y], i) => {
-    fill(sparks[i], x, y, 1, 3, T.cream);
-    fill(sparks[i], x - 1, y + 1, 3, 1, T.cream);
-  });
-  [[146, 10], [148, 24]].forEach(([x, y], i) => {
-    fill(sparks[(i + 1) % 2], x, y, 1, 3, T.cream);
-    fill(sparks[(i + 1) % 2], x - 1, y + 1, 3, 1, T.cream);
+  const trunkG = grid(W, H);
+  fill(trunkG, TRX - 2, 32, 5, HZ - 32, TC);
+  fill(trunkG, TRX - 9, 40, 8, 2, TC);
+  fill(trunkG, TRX + 4, 37, 9, 2, TC);
+  fill(trunkG, TRX - 2, 29, 5, 4, TC);
+  const trunkLayer = layer('trunk', { grid: trunkG, T });
+
+  const canopyLayers = SEASONS.map((name, i) => {
+    const sc = SC4[name]; const g = grid(W, H);
+    if (name !== 'winter') {
+      blob(g, TRX, 22, 30, 16, sc.canopy);
+      blob(g, TRX - 11, 15, 13, 8, sc.canopyHi);
+      blob(g, TRX + 12, 27, 13, 8, sc.canopyLo);
+    } else {
+      fill(g, TRX - 3, 28, 7, 1, sc.particle);   // tuyet ngon cay
+      fill(g, TRX - 9, 39, 8, 1, sc.particle);   // tuyet canh trai
+      fill(g, TRX + 4, 36, 9, 1, sc.particle);   // tuyet canh phai
+    }
+    return layer('canopy-' + name, { grid: g, T }, { opacity: i === 0 ? 1 : 0, anim: win(i) });
   });
 
-  const cyc = (vals, dur) => ({ attr: 'opacity', values: vals.split(';'), dur });
+  const px = TRX + 7;
+  const personG = grid(W, H);
+  fill(personG, px + 1, 47, 4, 3, P.hair);
+  fill(personG, px + 1, 50, 4, 3, P.skin);
+  fill(personG, px, 53, 6, 6, P.shirt);
+  fill(personG, px + 4, 58, 7, 2, P.pants);
+  const personLayer = layer('person', { grid: personG, T });
+
+  const detailLayers = SEASONS.map((name, i) => {
+    const sc = SC4[name]; const g = grid(W, H);
+    if (name === 'spring') { put(g, px + 2, 45, sc.canopyHi); put(g, px + 3, 46, sc.particle); }
+    if (name === 'summer') { fill(g, px + 7, 54, 2, 3, sc.accent); }
+    if (name === 'autumn') { fill(g, px + 1, 46, 4, 2, sc.canopyLo); }
+    if (name === 'winter') { fill(g, px, 52, 6, 2, sc.accent); put(g, px + 8, 49, sc.glow); put(g, px + 9, 47, sc.glow); }
+    return layer('det-' + name, { grid: g, T }, { opacity: i === 0 ? 1 : 0, anim: win(i) });
+  });
+
+  const DOTS = {
+    spring: [[46, 12], [58, 8], [80, 10], [92, 14]],
+    summer: [[40, 40], [52, 46], [86, 44], [96, 48]],
+    autumn: [[44, 10], [60, 7], [78, 12], [94, 9]],
+    winter: [[42, 8], [54, 5], [68, 10], [82, 6], [92, 11], [100, 5]],
+  };
+  const particleLayers = SEASONS.map((name, i) => {
+    const sc = SC4[name]; const g = grid(W, H);
+    DOTS[name].forEach(([x, y]) => fill(g, x, y, 2, 2, name === 'summer' ? sc.glow : sc.particle));
+    const fall = name === 'summer'
+      ? { attr: 'translate', values: ['0 0', '0 -3', '0 0', '0 3'], dur: 4, calcMode: 'linear' }
+      : { attr: 'translate', values: ['0 0', '0 ' + (HZ + 4)], dur: DUR / n, calcMode: 'linear' };
+    return layer('part-' + name, { grid: g, T }, { opacity: i === 0 ? 1 : 0, anims: [win(i), fall] });
+  });
 
   return svg({
-    w: W, h: H, cell: 6,
-    title: 'banner-' + T.name,
-    desc: 'Pixel art: nguoi ngoi sofa cam chi tay ve man hinh CRT dang chay log.',
-    layers: [
-      layer('base', { grid: base, T }, { opacity: 1 }),
-      ...screens.map((g, i) => layer(`screen${i}`, { grid: g, T }, {
-        opacity: 0, anim: cyc(rotateOnes(3, i), 3.6),
-      })),
-      layer('sofa', { grid: sofa, T }, {
-        anim: { attr: 'translate', values: ['0 0', '0 1', '0 0', '0 -1'], keyTimes: [0, 0.25, 0.5, 0.75], dur: 2.4 },
-      }),
-      ...sparks.map((g, i) => layer(`spark${i}`, { grid: g, T }, {
-        opacity: 0, anim: cyc(i === 0 ? '1;0;1;0' : '0;1;0;1', 1.6),
-      })),
-    ],
+    w: W, h: H, cell: 5, title: 'hero-' + T.name,
+    desc: 'Pixel scene: goc cay va nguoi ngoi duoi tu vong lap qua 4 mua xuan ha thu dong.',
+    layers: [...bgLayers, trunkLayer, ...canopyLayers, personLayer, ...detailLayers, ...particleLayers],
   });
 }
 
 // ---------------------------------------------------------------- log block
 
 const LOG_LINES = [
-  '> PROMPT: MAKE IT ALIVE',
-  '> MODEL: 3 FILES, 240 LINES',
-  '> ME: READS DIFF, SQUINTS',
-  '> TEST: GREEN, NO IDEA WHY',
-  '> SHIP: 05:00 LOCAL TIME',
-  '> TODO: LEARN TO CODE, SURE',
+  '> MODE: AFK',
+  '> PUSH: 22:00',
+  '> BUILD: PASS',
+  '> BUGS: WONTFIX',
+  '> BED: WARM',
 ];
 
-function logBlock(T) {
-  const W = 176, H = 12 + LOG_LINES.length * 10 + 8;
+function logBlock(T, SC4) {
+  const W = 176, H = 12 + LOG_LINES.length * 10 + 8, n = SEASONS.length, DUR = 20;
   const frame = grid(W, H);
   fill(frame, 0, 0, W, H, T.panel);
   outline(frame, 0, 0, W, H, T.border);
   fill(frame, 1, 1, W - 2, 7, T.dim);
-  [[3, 3, T.orange], [7, 3, T.cream], [11, 3, T.green]].forEach(([x, y, c]) => fill(frame, x, y, 2, 2, c));
   text(frame, 18, 3, 'VIBE.LOG', T.ink, { scale: 1 });
 
   const rows = LOG_LINES.map((ln, i) => {
     const g = grid(W, H);
-    text(g, 6, 12 + i * 10, ln, i === LOG_LINES.length - 1 ? T.orange : T.ink, { scale: 1 });
+    text(g, 6, 12 + i * 10, ln, T.ink, { scale: 1 });
     return layer(`line${i}`, { grid: g, T }, {
       opacity: 0, anim: reveal(i, LOG_LINES.length + 2, 7.2),
     });
@@ -288,10 +352,18 @@ function logBlock(T) {
     opacity: 0, anim: { attr: 'opacity', values: ['1', '0'], keyTimes: [0, 0.5], dur: 1 },
   }));
 
+  // 3 cham "cua so" doi mau theo mua (dong bo hero) — lop rieng de khong doi
+  // hai animate opacity tren cung group (reveal cua dong log o tren).
+  const dotLayers = SEASONS.map((name, i) => {
+    const sc = SC4[name]; const g = grid(W, H);
+    fill(g, 3, 3, 2, 2, sc.accent); fill(g, 7, 3, 2, 2, sc.particle); fill(g, 11, 3, 2, 2, sc.sun);
+    return layer('dots-' + name, { grid: g, T }, { opacity: i === 0 ? 1 : 0, anim: seasonWindow(i, n, DUR) });
+  });
+
   return svg({
     w: W, h: H, cell: 6, title: 'log-' + T.name,
-    desc: 'Pixel terminal log: 6 dong log ve vong lap prompt -> model -> review -> ship, hien dan.',
-    layers: [layer('frame', { grid: frame, T }), ...rows],
+    desc: 'Pixel terminal log: 5 dong log tinh co hien dan, 3 cham cua so doi mau theo 4 mua.',
+    layers: [layer('frame', { grid: frame, T }), ...rows, ...dotLayers],
   });
 }
 
@@ -302,7 +374,7 @@ function reveal(i, total, dur) {
 
 // ---------------------------------------------------------------- trophy strip
 
-function trophyStrip(T, s) {
+function trophyStrip(T, s, SC4) {
   const tiles = [
     [String(s.commits), 'COMMITS'],
     [String(s.prs), 'PRS'],
@@ -310,7 +382,7 @@ function trophyStrip(T, s) {
     [String(s.stars), 'STARS'],
     [String(s.accountDays), 'DAYS'],
   ];
-  const TW = 60, H = 42, W = TW * tiles.length;
+  const TW = 60, H = 42, W = TW * tiles.length, n = SEASONS.length, DUR = 20;
   const frame = grid(W, H);
   fill(frame, 0, 0, W, H, T.bg);
   tiles.forEach((_, i) => {
@@ -320,7 +392,7 @@ function trophyStrip(T, s) {
 
   const layers = [layer('frame', { grid: frame, T }), ...tiles.map(([val, label], i) => {
     const g = grid(W, H);
-    // icon coc: bun kem, quai + day cam, choe xanh
+    // icon coc: bun kem, quai + day cam, choe xanh (giu nguyen, so doi mau o lop duoi)
     const x = i * TW + 10, y = 8;
     fill(g, x, y, 10, 5, T.cream);
     fill(g, x, y, 10, 1, T.orangeDeep);
@@ -329,10 +401,17 @@ function trophyStrip(T, s) {
     fill(g, x + 3, y + 5, 4, 3, T.orange);
     fill(g, x + 1, y + 8, 8, 2, T.orangeDeep);
     fill(g, x + 4, y - 3, 2, 2, T.green);
-    text(g, i * TW + 8, 18, val, T.cyan, { scale: 2 });
     text(g, i * TW + 8, 33, label, T.ink, { scale: 1 });
     return layer(`tile${i}`, { grid: g, T });
   })];
+
+  // 5 con so doi mau theo mua (4 lop de chong, chi animate opacity mua -> khong
+  // trung voi shine blink o duoi).
+  SEASONS.forEach((name, i) => {
+    const sc = SC4[name]; const g = grid(W, H);
+    tiles.forEach(([val], k) => text(g, k * TW + 8, 18, val, sc.accent, { scale: 2 }));
+    layers.push(layer('val-' + name, { grid: g, T }, { opacity: i === 0 ? 1 : 0, anim: seasonWindow(i, n, DUR) }));
+  });
 
   const shine = grid(W, H);
   fill(shine, 4 * TW + 10, 8, 10, 5, T.ink);
@@ -349,29 +428,38 @@ function trophyStrip(T, s) {
 
 // ---------------------------------------------------------------- contribution snake
 
-function snakeGrid(T, cal) {
+function snakeGrid(T, cal, SC4) {
   const COLS = cal.weeks.length, ROWS = 7;
   const W = (COLS + 2) * 8, H = (ROWS + 5) * 8;
   const base = grid(W, H);
   fill(base, 0, 0, W, H, T.bg);
   outline(base, 0, 0, W, H, T.border);
   text(base, 8, 8, 'CONTRIBUTIONS', T.ink, { scale: 1 });
-  // legend do tuong phan
-  text(base, 8, H - 10, 'LESS', T.dim, { scale: 1 });
-  T.levels.forEach((c, i) => fill(base, 36 + i * 8, H - 10, 7, 7, c));
-  text(base, 36 + 5 * 8 + 2, H - 10, 'MORE', T.dim, { scale: 1 });
+
+  // Mua cua moi cot = thang cua ngay dau tuan (doc date that, khong can commit > 0).
+  const colSeason = cal.weeks.map((w) => monthSeason(Number(w[0].date.slice(5, 7))));
 
   cal.weeks.forEach((week, wx) => {
+    const sc = SC4[colSeason[wx]];
+    const ramp = [sc.groundDeep, sc.ground, sc.canopyLo, sc.canopy, sc.canopyHi];
+    const x0 = 8 + (wx + 1) * 8;
+    fill(base, x0, 16, 7, 2, sc.skyLo);            // dai "tro" theo mua tren dinh cot
     week.forEach((day, wy) => {
-      const x = 8 + (wx + 1) * 8, y = 8 + (wy + 2) * 8;
-      fill(base, x, y, 7, 7, T.levels[day.level] ?? T.levels[0]);
+      fill(base, x0, 8 + (wy + 2) * 8, 7, 7, ramp[day.level] ?? ramp[0]);
     });
   });
 
-  // ran: 4 khuc than, buoc theo cot, calcMode discrete de dung chat vao o pixel
+  // legend 4 mua (thay cho ramp LESS/MORE vi du lieu dang flat)
+  SEASONS.forEach((name, i) => {
+    const sc = SC4[name]; const x = 8 + i * 26;
+    fill(base, x, H - 12, 7, 7, sc.canopy);
+    text(base, x + 9, H - 11, name.slice(0, 3).toUpperCase(), T.dim, { scale: 1 });
+  });
+
+  // ran: 4 khuc than mau trung tinh noi bat tren nen mua, buoc theo cot discrete
   const snake = grid(W, H);
   const HEAD = 8 + 5 * 8, ROWY = 8 + 4 * 8;
-  [[0, T.green], [-1, T.cyan], [-2, T.cyan], [-3, T.blue]].forEach(([dx, c]) => {
+  [[0, T.orange], [-1, T.cream], [-2, T.cream], [-3, T.orangeDeep]].forEach(([dx, c]) => {
     fill(snake, HEAD + dx * 8, ROWY, 7, 7, c);
   });
   fill(snake, HEAD + 2, ROWY + 2, 2, 2, T.bg); // mat
@@ -382,7 +470,7 @@ function snakeGrid(T, cal) {
 
   return svg({
     w: W, h: H, cell: 2, title: 'snake-' + T.name,
-    desc: `Luoi ${COLS} tuan contribution (${cal.total} commit duong tinh trong 12 thang) voi ran pixel bo ngang.`,
+    desc: `Luoi ${COLS} tuan contribution toi thanh dai dat 4 mua theo thang commit, ran pixel bo ngang.`,
     layers: [
       layer('base', { grid: base, T }),
       layer('snake', { grid: snake, T }, { anim: { attr: 'translate', values: pos, keyTimes: kt, dur: steps * 0.12 } }),
@@ -446,10 +534,10 @@ const writesCache = {};
 for (const T of [DARK, LIGHT]) {
   const sfx = T.name;
   const writes = {
-    [`banner-${sfx}.svg`]: banner(T),
-    [`log-${sfx}.svg`]: logBlock(T),
-    [`trophy-strip-${sfx}.svg`]: trophyStrip(T, data.stats),
-    [`grid-snake-${sfx}.svg`]: snakeGrid(T, data.calendar),
+    [`hero-${sfx}.svg`]: hero(T, SCENES[T.name]),
+    [`log-${sfx}.svg`]: logBlock(T, SCENES[T.name]),
+    [`trophy-strip-${sfx}.svg`]: trophyStrip(T, data.stats, SCENES[T.name]),
+    [`grid-snake-${sfx}.svg`]: snakeGrid(T, data.calendar, SCENES[T.name]),
   };
   for (const [name, body] of Object.entries(writes)) { writeFileSync(join(OUT, name), body); writesCache[name] = 1; }
 }
